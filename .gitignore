@@ -1,0 +1,13 @@
+# Secrets and local state
+.env
+.env.*
+*.pem
+*.key
+*.crt
+
+# Pi local/runtime state
+pi/agent/auth.json
+pi/agent/sessions/
+pi/agent/cache/
+pi/agent/bin/
+pi/agent/npm/node_modules/

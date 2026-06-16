@@ -1,0 +1,19 @@
+{
+  "lastChangelogVersion": "0.79.4",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.5",
+  "defaultThinkingLevel": "medium",
+  "theme": "github-dark-high-contrast",
+  "packages": [
+    "npm:pi-exa",
+    "npm:@marckrenn/pi-sub-bar"
+  ],
+  "timeoutMs": 600000,
+  "websocketConnectTimeoutMs": 15000,
+  "retry": {
+    "provider": {
+      "timeoutMs": 1800000,
+      "maxRetryDelayMs": 300000
+    }
+  }
+}
