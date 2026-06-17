@@ -36,6 +36,10 @@ export default function askModeExtension(pi: ExtensionAPI): void {
 		});
 	}
 
+	function updateStatus(ctx: ExtensionContext): void {
+		ctx.ui.setWidget("ask-mode", askModeEnabled ? [ctx.ui.theme.fg("accent", "󰡟 ask")] : undefined);
+	}
+
 	function enableAskMode(ctx: ExtensionContext, options: { notify?: boolean } = {}): void {
 		if (!askModeEnabled) {
 			previousActiveTools = pi.getActiveTools();
@@ -43,6 +47,7 @@ export default function askModeExtension(pi: ExtensionAPI): void {
 
 		askModeEnabled = true;
 		pi.setActiveTools(ASK_MODE_TOOLS);
+		updateStatus(ctx);
 
 		if (options.notify !== false) {
 			ctx.ui.notify(`Ask mode enabled. Tools: ${ASK_MODE_TOOLS.join(", ")}`, "info");
@@ -53,6 +58,7 @@ export default function askModeExtension(pi: ExtensionAPI): void {
 		askModeEnabled = false;
 		pi.setActiveTools(previousActiveTools?.length ? previousActiveTools : FALLBACK_TOOLS);
 		previousActiveTools = undefined;
+		updateStatus(ctx);
 
 		if (options.notify !== false) {
 			ctx.ui.notify("Ask mode disabled. Previous tools restored.", "info");
@@ -165,5 +171,6 @@ If the user asks you to build, implement, execute, or modify files, explain that
 			}
 			pi.setActiveTools(ASK_MODE_TOOLS);
 		}
+		updateStatus(ctx);
 	});
 }
