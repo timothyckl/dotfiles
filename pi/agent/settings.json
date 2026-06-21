@@ -1,12 +1,13 @@
 {
-  "lastChangelogVersion": "0.79.4",
-  "defaultProvider": "openai-codex",
-  "defaultModel": "gpt-5.5",
-  "defaultThinkingLevel": "medium",
+  "lastChangelogVersion": "0.79.6",
+  "defaultProvider": "deepseek",
+  "defaultModel": "deepseek-v4-pro",
+  "defaultThinkingLevel": "high",
   "theme": "github-dark-high-contrast",
   "packages": [
     "npm:pi-exa",
-    "npm:@marckrenn/pi-sub-bar"
+    "npm:@marckrenn/pi-sub-bar",
+    "npm:@aliou/pi-guardrails"
   ],
   "timeoutMs": 600000,
   "websocketConnectTimeoutMs": 15000,
@@ -15,5 +16,8 @@
       "timeoutMs": 1800000,
       "maxRetryDelayMs": 300000
     }
-  }
+  },
+  "hideThinkingBlock": true,
+  "collapseChangelog": true,
+  "quietStartup": true
 }

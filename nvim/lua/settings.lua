@@ -15,9 +15,9 @@ vim.opt.termguicolors = true
 -- Use space as the main leader key for custom mappings.
 vim.g.mapleader = " "
 
--- Treat Quarto Markdown files as Markdown so they use the same settings.
+-- Treat Quarto Markdown files as Quarto so quarto-nvim loads its keymaps.
 vim.filetype.add({
 	extension = {
-		qmd = "markdown",
+		qmd = "quarto",
 	},
 })
