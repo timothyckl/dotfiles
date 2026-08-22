@@ -1,10 +1,3 @@
-/**
- * Questionnaire Tool - Unified tool for asking single or multiple questions
- *
- * Single question: simple options list
- * Multiple questions: tab bar navigation between questions
- */
-
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
 	Editor,
@@ -17,16 +10,11 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
-// Types
 interface QuestionOption {
 	value: string;
 	label: string;
 	description?: string;
 }
-
-type RenderOption = QuestionOption & { isOther?: boolean; isDone?: boolean };
-
-type QuestionType = "single" | "multi";
 
 interface Question {
 	id: string;
@@ -34,330 +22,289 @@ interface Question {
 	prompt: string;
 	options: QuestionOption[];
 	allowOther: boolean;
-	type: QuestionType;
 }
 
 interface Answer {
 	id: string;
-	value: string | string[];
-	label: string | string[];
-	wasCustom: boolean;
-	index?: number;
-	indices?: number[];
-}
-
-interface MultiSelection {
 	value: string;
 	label: string;
 	wasCustom: boolean;
 	index?: number;
 }
 
-interface QuestionnaireResult {
+interface QuestionnaireDetails {
 	questions: Question[];
 	answers: Answer[];
 	cancelled: boolean;
+	error?: string;
 }
 
-// Schema
+type DisplayOption = QuestionOption & { isOther?: boolean };
+
 const QuestionOptionSchema = Type.Object({
-	value: Type.String({ description: "The value returned when selected" }),
-	label: Type.String({ description: "Display label for the option" }),
-	description: Type.Optional(Type.String({ description: "Optional description shown below label" })),
+	value: Type.String({ description: "Stable value returned when this option is selected" }),
+	label: Type.String({ description: "Option text displayed to the user" }),
+	description: Type.Optional(Type.String({ description: "Optional supporting text displayed below the option" })),
 });
 
 const QuestionSchema = Type.Object({
-	id: Type.String({ description: "Unique identifier for this question" }),
+	id: Type.String({ description: "Unique identifier used to associate the question with its answer" }),
 	label: Type.Optional(
-		Type.String({
-			description: "Short contextual label for tab bar, e.g. 'Scope', 'Priority' (defaults to Q1, Q2)",
-		}),
+		Type.String({ description: "Short navigation label, such as Scope or Priority; defaults to Q1, Q2, and so on" }),
 	),
-	prompt: Type.String({ description: "The full question text to display" }),
-	type: Type.Optional(
-		Type.Union([Type.Literal("single"), Type.Literal("multi"), Type.Literal("multi-select"), Type.Literal("multiselect")], {
-			description: "Question type: 'single' for one answer or 'multi'/'multi-select' for multiple selections (default: single)",
-		}),
-	),
-	options: Type.Array(QuestionOptionSchema, { description: "Available options to choose from" }),
-	allowOther: Type.Optional(Type.Boolean({ description: "Allow 'Type something' option (default: true)" })),
+	prompt: Type.String({ description: "Question displayed to the user" }),
+	options: Type.Array(QuestionOptionSchema, { description: "Single-choice options displayed to the user" }),
+	allowOther: Type.Optional(Type.Boolean({ description: "Allow a free-text answer; defaults to true" })),
 });
 
-const QuestionnaireParams = Type.Object({
-	questions: Type.Array(QuestionSchema, { description: "Questions to ask the user" }),
+const QuestionnaireParameters = Type.Object({
+	questions: Type.Array(QuestionSchema, { description: "Questions to ask in the order they should be answered" }),
 });
 
-function errorResult(
-	message: string,
-	questions: Question[] = [],
-): { content: { type: "text"; text: string }[]; details: QuestionnaireResult } {
+function normalizeQuestions(
+	questions: Array<{
+		id: string;
+		label?: string;
+		prompt: string;
+		options: QuestionOption[];
+		allowOther?: boolean;
+	}>,
+): Question[] {
+	return questions.map((question, index) => ({
+		id: question.id.trim(),
+		label: question.label?.trim() || `Q${index + 1}`,
+		prompt: question.prompt.trim(),
+		options: question.options.map((option) => ({
+			value: option.value.trim(),
+			label: option.label.trim(),
+			description: option.description?.trim() || undefined,
+		})),
+		allowOther: question.allowOther !== false,
+	}));
+}
+
+function validateQuestions(questions: Question[]): string | undefined {
+	if (questions.length === 0) return "No questions were provided.";
+
+	const ids = new Set<string>();
+	for (const question of questions) {
+		if (!question.id) return "Every question must have a non-empty id.";
+		if (ids.has(question.id)) return `Question id '${question.id}' is duplicated.`;
+		ids.add(question.id);
+
+		if (!question.prompt) return `Question '${question.id}' must have a non-empty prompt.`;
+		if (!question.allowOther && question.options.length === 0) {
+			return `Question '${question.id}' must provide at least one option when free-text answers are disabled.`;
+		}
+
+		for (const option of question.options) {
+			if (!option.value) return `Question '${question.id}' contains an option with an empty value.`;
+			if (!option.label) return `Question '${question.id}' contains an option with an empty label.`;
+		}
+	}
+}
+
+function errorResult(message: string, questions: Question[]): {
+	content: Array<{ type: "text"; text: string }>;
+	details: QuestionnaireDetails;
+} {
 	return {
-		content: [{ type: "text", text: message }],
-		details: { questions, answers: [], cancelled: true },
+		content: [{ type: "text", text: `Questionnaire error: ${message}` }],
+		details: { questions, answers: [], cancelled: true, error: message },
 	};
 }
 
-export default function questionnaire(pi: ExtensionAPI) {
+function orderedAnswers(questions: Question[], answers: Map<string, Answer>): Answer[] {
+	return questions.flatMap((question) => {
+		const answer = answers.get(question.id);
+		return answer ? [answer] : [];
+	});
+}
+
+export default function questionnaireExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "questionnaire",
 		label: "Questionnaire",
 		description:
-			"Ask the user one or more questions. Use for clarifying requirements, getting preferences, or confirming decisions. For single questions, shows a simple option list. For multiple questions, shows a tab-based interface.",
-		parameters: QuestionnaireParams,
+			"Ask the user one or more single-choice questions. Supports option descriptions and optional free-text answers. Use it to clarify requirements, collect preferences, or confirm decisions before proceeding.",
+		promptSnippet: "Ask one or more interactive single-choice questions with optional free-text answers",
+		promptGuidelines: [
+			"Use questionnaire when answers to a small set of focused questions are needed before proceeding; do not use it when the user's request is already clear.",
+		],
+		parameters: QuestionnaireParameters,
+		executionMode: "sequential",
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const questions = normalizeQuestions(params.questions);
+			const validationError = validateQuestions(questions);
+			if (validationError) return errorResult(validationError, questions);
 			if (ctx.mode !== "tui") {
-				return errorResult("Error: UI not available (running in non-interactive mode)");
-			}
-			if (params.questions.length === 0) {
-				return errorResult("Error: No questions provided");
+				return errorResult("Interactive UI is available only in TUI mode.", questions);
 			}
 
-			// Normalize questions with defaults
-			const questions: Question[] = params.questions.map((q, i) => {
-				const questionType = q.type === "multi" || q.type === "multi-select" || q.type === "multiselect" ? "multi" : "single";
-				return {
-					...q,
-					label: q.label || `Q${i + 1}`,
-					allowOther: q.allowOther !== false,
-					type: questionType,
-				};
-			});
+			const multipleQuestions = questions.length > 1;
+			const submitTab = questions.length;
+			const tabCount = questions.length + 1;
 
-			const isMulti = questions.length > 1;
-			const totalTabs = questions.length + 1; // questions + Submit
-
-			const result = await ctx.ui.custom<QuestionnaireResult>((tui, theme, _kb, done) => {
-				// State
+			const result = await ctx.ui.custom<QuestionnaireDetails>((tui, theme, _keybindings, done) => {
 				let currentTab = 0;
-				let optionIndex = 0;
-				let inputMode = false;
-				let inputQuestionId: string | null = null;
+				let selectedOption = 0;
+				let customInputQuestionId: string | undefined;
+				let customInputError: string | undefined;
 				let cachedLines: string[] | undefined;
 				const answers = new Map<string, Answer>();
-				const multiSelections = new Map<string, Map<string, MultiSelection>>();
 
-				// Editor for "Type something" option
 				const editorTheme: EditorTheme = {
-					borderColor: (s) => theme.fg("accent", s),
+					borderColor: (text) => theme.fg("accent", text),
 					selectList: {
-						selectedPrefix: (t) => theme.fg("accent", t),
-						selectedText: (t) => theme.fg("accent", t),
-						description: (t) => theme.fg("muted", t),
-						scrollInfo: (t) => theme.fg("dim", t),
-						noMatch: (t) => theme.fg("warning", t),
+						selectedPrefix: (text) => theme.fg("accent", text),
+						selectedText: (text) => theme.fg("accent", text),
+						description: (text) => theme.fg("muted", text),
+						scrollInfo: (text) => theme.fg("dim", text),
+						noMatch: (text) => theme.fg("warning", text),
 					},
 				};
 				const editor = new Editor(tui, editorTheme);
 
-				// Helpers
 				function refresh() {
 					cachedLines = undefined;
 					tui.requestRender();
 				}
 
-				function submit(cancelled: boolean) {
-					done({ questions, answers: Array.from(answers.values()), cancelled });
-				}
-
-				function currentQuestion(): Question | undefined {
+				function getCurrentQuestion(): Question | undefined {
 					return questions[currentTab];
 				}
 
-				function currentOptions(): RenderOption[] {
-					const q = currentQuestion();
-					if (!q) return [];
-					const opts: RenderOption[] = [...q.options];
-					if (q.allowOther) {
-						opts.push({ value: "__other__", label: "Type something.", isOther: true });
+				function getOptions(question: Question | undefined): DisplayOption[] {
+					if (!question) return [];
+					const options: DisplayOption[] = [...question.options];
+					if (question.allowOther) {
+						options.push({ value: "", label: "Type something.", isOther: true });
 					}
-					if (q.type === "multi") {
-						opts.push({ value: "__done__", label: "Done", isDone: true });
-					}
-					return opts;
+					return options;
 				}
 
-				function allAnswered(): boolean {
-					return questions.every((q) => answers.has(q.id));
+				function allQuestionsAnswered(): boolean {
+					return questions.every((question) => answers.has(question.id));
 				}
 
-				function advanceAfterAnswer() {
-					if (!isMulti) {
-						submit(false);
+				function finish(cancelled: boolean) {
+					done({ questions, answers: orderedAnswers(questions, answers), cancelled });
+				}
+
+				function restoreSelection() {
+					const question = getCurrentQuestion();
+					if (!question) {
+						selectedOption = 0;
 						return;
 					}
-					if (currentTab < questions.length - 1) {
-						currentTab++;
-					} else {
-						currentTab = questions.length; // Submit tab
-					}
-					optionIndex = 0;
+
+					const answer = answers.get(question.id);
+					selectedOption = answer?.wasCustom ? question.options.length : Math.max(0, (answer?.index ?? 1) - 1);
+				}
+
+				function moveToTab(tab: number) {
+					currentTab = (tab + tabCount) % tabCount;
+					restoreSelection();
 					refresh();
 				}
 
-				function saveAnswer(questionId: string, value: string, label: string, wasCustom: boolean, index?: number) {
-					answers.set(questionId, { id: questionId, value, label, wasCustom, index });
-				}
-
-				function saveMultiAnswer(questionId: string) {
-					const selected = Array.from(multiSelections.get(questionId)?.values() || []);
-					if (selected.length === 0) {
-						answers.delete(questionId);
+				function advanceAfterAnswer() {
+					if (!multipleQuestions) {
+						finish(false);
 						return;
 					}
-					answers.set(questionId, {
-						id: questionId,
-						value: selected.map((s) => s.value),
-						label: selected.map((s) => s.label),
-						wasCustom: selected.some((s) => s.wasCustom),
-						indices: selected.map((s) => s.index).filter((i): i is number => i !== undefined),
+					moveToTab(currentTab < questions.length - 1 ? currentTab + 1 : submitTab);
+				}
+
+				function saveOptionAnswer(question: Question, option: QuestionOption, index: number) {
+					answers.set(question.id, {
+						id: question.id,
+						value: option.value,
+						label: option.label,
+						wasCustom: false,
+						index: index + 1,
 					});
 				}
 
-				function toggleMultiSelection(questionId: string, opt: RenderOption, index: number) {
-					let selected = multiSelections.get(questionId);
-					if (!selected) {
-						selected = new Map<string, MultiSelection>();
-						multiSelections.set(questionId, selected);
-					}
-					const key = `option:${index}`;
-					if (selected.has(key)) {
-						selected.delete(key);
-					} else {
-						selected.set(key, { value: opt.value, label: opt.label, wasCustom: false, index: index + 1 });
-					}
-					saveMultiAnswer(questionId);
-				}
-
-				function addMultiCustomAnswer(questionId: string, value: string) {
-					let selected = multiSelections.get(questionId);
-					if (!selected) {
-						selected = new Map<string, MultiSelection>();
-						multiSelections.set(questionId, selected);
-					}
-					selected.set(`custom:${value}`, { value, label: value, wasCustom: true });
-					saveMultiAnswer(questionId);
-				}
-
-				function formatAnswerLabel(answer: Answer): string {
-					return Array.isArray(answer.label) ? answer.label.join(", ") : answer.label;
-				}
-
-				// Editor submit callback
 				editor.onSubmit = (value) => {
-					if (!inputQuestionId) return;
-					const trimmed = value.trim() || "(no response)";
-					const q = questions.find((question) => question.id === inputQuestionId);
-					if (q?.type === "multi") {
-						addMultiCustomAnswer(inputQuestionId, trimmed);
-						inputMode = false;
-						inputQuestionId = null;
-						editor.setText("");
+					const answer = value.trim();
+					if (!answer) {
+						customInputError = "Enter an answer or press Esc to go back.";
 						refresh();
 						return;
 					}
-					saveAnswer(inputQuestionId, trimmed, trimmed, true);
-					inputMode = false;
-					inputQuestionId = null;
+					if (!customInputQuestionId) return;
+
+					answers.set(customInputQuestionId, {
+						id: customInputQuestionId,
+						value: answer,
+						label: answer,
+						wasCustom: true,
+					});
+					customInputQuestionId = undefined;
+					customInputError = undefined;
 					editor.setText("");
 					advanceAfterAnswer();
 				};
 
 				function handleInput(data: string) {
-					// Input mode: route to editor
-					if (inputMode) {
+					if (customInputQuestionId) {
 						if (matchesKey(data, Key.escape)) {
-							inputMode = false;
-							inputQuestionId = null;
+							customInputQuestionId = undefined;
+							customInputError = undefined;
 							editor.setText("");
 							refresh();
 							return;
 						}
+						customInputError = undefined;
 						editor.handleInput(data);
 						refresh();
 						return;
 					}
 
-					const q = currentQuestion();
-					const opts = currentOptions();
-
-					// Tab navigation (multi-question only)
-					if (isMulti) {
-						if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
-							currentTab = (currentTab + 1) % totalTabs;
-							optionIndex = 0;
-							refresh();
-							return;
-						}
-						if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left)) {
-							currentTab = (currentTab - 1 + totalTabs) % totalTabs;
-							optionIndex = 0;
-							refresh();
-							return;
-						}
+					if (multipleQuestions && (matchesKey(data, Key.tab) || matchesKey(data, Key.right))) {
+						moveToTab(currentTab + 1);
+						return;
 					}
-
-					// Submit tab
-					if (currentTab === questions.length) {
-						if (matchesKey(data, Key.enter) && allAnswered()) {
-							submit(false);
-						} else if (matchesKey(data, Key.escape)) {
-							submit(true);
-						}
+					if (multipleQuestions && (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left))) {
+						moveToTab(currentTab - 1);
 						return;
 					}
 
-					// Option navigation
+					if (currentTab === submitTab) {
+						if (matchesKey(data, Key.enter) && allQuestionsAnswered()) finish(false);
+						else if (matchesKey(data, Key.escape)) finish(true);
+						return;
+					}
+
+					const question = getCurrentQuestion();
+					const options = getOptions(question);
 					if (matchesKey(data, Key.up)) {
-						optionIndex = Math.max(0, optionIndex - 1);
+						selectedOption = Math.max(0, selectedOption - 1);
 						refresh();
 						return;
 					}
 					if (matchesKey(data, Key.down)) {
-						optionIndex = Math.min(opts.length - 1, optionIndex + 1);
+						selectedOption = Math.min(options.length - 1, selectedOption + 1);
 						refresh();
 						return;
 					}
-
-					// Select option
-					if (q?.type === "multi" && (matchesKey(data, Key.space) || matchesKey(data, Key.enter))) {
-						const opt = opts[optionIndex];
-						if (opt.isDone) {
-							if (answers.has(q.id)) {
-								advanceAfterAnswer();
-							}
-							return;
-						}
-						if (opt.isOther) {
-							inputMode = true;
-							inputQuestionId = q.id;
-							editor.setText("");
+					if (matchesKey(data, Key.enter) && question) {
+						const option = options[selectedOption];
+						if (!option) return;
+						if (option.isOther) {
+							const previousAnswer = answers.get(question.id);
+							customInputQuestionId = question.id;
+							editor.setText(previousAnswer?.wasCustom ? previousAnswer.value : "");
 							refresh();
 							return;
 						}
-						toggleMultiSelection(q.id, opt, optionIndex);
-						refresh();
-						return;
-					}
-
-					if (matchesKey(data, Key.enter) && q) {
-						const opt = opts[optionIndex];
-						if (opt.isOther) {
-							inputMode = true;
-							inputQuestionId = q.id;
-							editor.setText("");
-							refresh();
-							return;
-						}
-						saveAnswer(q.id, opt.value, opt.label, false, optionIndex + 1);
+						saveOptionAnswer(question, option, selectedOption);
 						advanceAfterAnswer();
 						return;
 					}
-
-					// Cancel
-					if (matchesKey(data, Key.escape)) {
-						submit(true);
-					}
+					if (matchesKey(data, Key.escape)) finish(true);
 				}
 
 				function render(width: number): string[] {
@@ -365,136 +312,90 @@ export default function questionnaire(pi: ExtensionAPI) {
 
 					const lines: string[] = [];
 					const renderWidth = Math.max(1, width);
-					const q = currentQuestion();
-					const opts = currentOptions();
+					const question = getCurrentQuestion();
+					const options = getOptions(question);
 
 					function addWrapped(text: string) {
 						lines.push(...wrapTextWithAnsi(text, renderWidth));
 					}
 
-					function addWrappedWithPrefix(prefix: string, text: string) {
+					function addPrefixed(prefix: string, text: string) {
 						const prefixWidth = visibleWidth(prefix);
 						if (prefixWidth >= renderWidth) {
 							addWrapped(prefix + text);
 							return;
 						}
 						const wrapped = wrapTextWithAnsi(text, renderWidth - prefixWidth);
-						const continuationPrefix = " ".repeat(prefixWidth);
-						for (let i = 0; i < wrapped.length; i++) {
-							lines.push(`${i === 0 ? prefix : continuationPrefix}${wrapped[i]}`);
-						}
+						const continuation = " ".repeat(prefixWidth);
+						wrapped.forEach((line, index) => lines.push(`${index === 0 ? prefix : continuation}${line}`));
+					}
+
+					function renderOptions() {
+						options.forEach((option, index) => {
+							const selected = index === selectedOption;
+							const prefix = selected ? theme.fg("accent", "> ") : "  ";
+							const label = `${index + 1}. ${option.label}`;
+							addPrefixed(prefix, theme.fg(selected ? "accent" : "text", label));
+							if (option.description) addPrefixed("     ", theme.fg("muted", option.description));
+						});
 					}
 
 					lines.push(theme.fg("accent", "─".repeat(renderWidth)));
 
-					// Tab bar (multi-question only)
-					if (isMulti) {
-						const tabs: string[] = ["← "];
-						for (let i = 0; i < questions.length; i++) {
-							const isActive = i === currentTab;
-							const isAnswered = answers.has(questions[i].id);
-							const lbl = questions[i].label;
-							const box = isAnswered ? "■" : "□";
-							const color = isAnswered ? "success" : "muted";
-							const text = ` ${box} ${lbl} `;
-							const styled = isActive ? theme.bg("selectedBg", theme.fg("text", text)) : theme.fg(color, text);
-							tabs.push(`${styled} `);
-						}
-						const canSubmit = allAnswered();
-						const isSubmitTab = currentTab === questions.length;
+					if (multipleQuestions) {
+						const tabs = questions.map((item, index) => {
+							const answered = answers.has(item.id);
+							const text = ` ${answered ? "■" : "□"} ${item.label} `;
+							return index === currentTab
+								? theme.bg("selectedBg", theme.fg("text", text))
+								: theme.fg(answered ? "success" : "muted", text);
+						});
 						const submitText = " ✓ Submit ";
-						const submitStyled = isSubmitTab
-							? theme.bg("selectedBg", theme.fg("text", submitText))
-							: theme.fg(canSubmit ? "success" : "dim", submitText);
-						tabs.push(`${submitStyled} →`);
-						addWrappedWithPrefix(" ", tabs.join(""));
+						tabs.push(
+							currentTab === submitTab
+								? theme.bg("selectedBg", theme.fg("text", submitText))
+								: theme.fg(allQuestionsAnswered() ? "success" : "dim", submitText),
+						);
+						addPrefixed(" ", `← ${tabs.join(" ")} →`);
 						lines.push("");
 					}
 
-					// Helper to render options list
-					function renderOptions() {
-						for (let i = 0; i < opts.length; i++) {
-							const opt = opts[i];
-							const selected = i === optionIndex;
-							const isOther = opt.isOther === true;
-							const isDone = opt.isDone === true;
-							const isChecked = q?.type === "multi" && multiSelections.get(q.id)?.has(`option:${i}`) === true;
-							const prefix = selected ? theme.fg("accent", "> ") : "  ";
-							let label: string;
-							if (q?.type === "multi" && isDone) {
-								label = answers.has(q.id) ? "✓ Done" : "Done (select at least one option first)";
-							} else if (q?.type === "multi" && isOther) {
-								label = `＋ ${opt.label}${inputMode ? " ✎" : ""}`;
-							} else if (q?.type === "multi") {
-								label = `${isChecked ? "☑" : "☐"} ${opt.label}`;
-							} else {
-								label = `${i + 1}. ${opt.label}${isOther && inputMode ? " ✎" : ""}`;
-							}
-							const color = selected || isChecked || (isOther && inputMode) ? "accent" : isDone && !answers.has(q?.id || "") ? "dim" : "text";
-
-							addWrappedWithPrefix(prefix, theme.fg(color, label));
-							if (opt.description && !isDone) {
-								addWrappedWithPrefix("     ", theme.fg("muted", opt.description));
-							}
-						}
-						if (q?.type === "multi") {
-							const custom = Array.from(multiSelections.get(q.id)?.values() || []).filter((s) => s.wasCustom);
-							for (const item of custom) {
-								addWrappedWithPrefix("  ", theme.fg("accent", `☑ ${item.label}`));
-							}
-						}
-					}
-
-					// Content
-					if (inputMode && q) {
-						addWrappedWithPrefix(" ", theme.fg("text", q.prompt));
+					if (currentTab === submitTab) {
+						addPrefixed(" ", theme.fg("accent", theme.bold("Review answers")));
 						lines.push("");
-						// Show options for reference
-						renderOptions();
-						lines.push("");
-						addWrappedWithPrefix(" ", theme.fg("muted", "Your answer:"));
-						for (const line of editor.render(Math.max(1, renderWidth - 2))) {
-							lines.push(` ${line}`);
+						for (const item of questions) {
+							const answer = answers.get(item.id);
+							const value = answer ? `${answer.wasCustom ? "(wrote) " : ""}${answer.label}` : "Unanswered";
+							addPrefixed(" ", `${theme.fg("muted", `${item.label}: `)}${theme.fg(answer ? "text" : "warning", value)}`);
 						}
 						lines.push("");
-						addWrappedWithPrefix(" ", theme.fg("dim", "Enter to submit • Esc to cancel"));
-					} else if (currentTab === questions.length) {
-						addWrappedWithPrefix(" ", theme.fg("accent", theme.bold("Ready to submit")));
-						lines.push("");
-						for (const question of questions) {
-							const answer = answers.get(question.id);
-							if (answer) {
-								const prefix = answer.wasCustom ? "(includes custom) " : "";
-								const summary = `${theme.fg("muted", `${question.label}: `)}${theme.fg("text", prefix + formatAnswerLabel(answer))}`;
-								addWrappedWithPrefix(" ", summary);
-							}
-						}
-						lines.push("");
-						if (allAnswered()) {
-							addWrappedWithPrefix(" ", theme.fg("success", "Press Enter to submit"));
-						} else {
-							const missing = questions
-								.filter((q) => !answers.has(q.id))
-								.map((q) => q.label)
-								.join(", ");
-							addWrappedWithPrefix(" ", theme.fg("warning", `Unanswered: ${missing}`));
-						}
-					} else if (q) {
-						addWrappedWithPrefix(" ", theme.fg("text", q.prompt));
+						addPrefixed(
+							" ",
+							theme.fg(
+								allQuestionsAnswered() ? "success" : "warning",
+								allQuestionsAnswered() ? "Press Enter to submit." : "Answer every question before submitting.",
+							),
+						);
+					} else if (question) {
+						addPrefixed(" ", theme.fg("text", question.prompt));
 						lines.push("");
 						renderOptions();
+
+						if (customInputQuestionId) {
+							lines.push("");
+							addPrefixed(" ", theme.fg("muted", "Your answer:"));
+							lines.push(...editor.render(renderWidth));
+							if (customInputError) addPrefixed(" ", theme.fg("warning", customInputError));
+						}
 					}
 
 					lines.push("");
-					if (!inputMode) {
-						const isMultiSelect = q?.type === "multi" && currentTab !== questions.length;
-						const help = isMultiSelect
-							? "↑↓ navigate • Space/Enter toggle • choose Done to finish • Esc cancel"
-							: isMulti
-								? "Tab/←→ navigate • ↑↓ select • Enter confirm • Esc cancel"
-								: "↑↓ navigate • Enter select • Esc cancel";
-						addWrappedWithPrefix(" ", theme.fg("dim", help));
-					}
+					const help = customInputQuestionId
+						? "Enter submit • Esc go back"
+						: multipleQuestions
+							? "Tab/←→ navigate • ↑↓ select • Enter confirm • Esc cancel"
+							: "↑↓ select • Enter confirm • Esc cancel";
+					addPrefixed(" ", theme.fg("dim", help));
 					lines.push(theme.fg("accent", "─".repeat(renderWidth)));
 
 					cachedLines = lines;
@@ -502,71 +403,65 @@ export default function questionnaire(pi: ExtensionAPI) {
 				}
 
 				return {
-					render,
-					invalidate: () => {
-						cachedLines = undefined;
+					get focused() {
+						return editor.focused;
 					},
+					set focused(value: boolean) {
+						editor.focused = value;
+					},
+					render,
 					handleInput,
+					invalidate() {
+						cachedLines = undefined;
+						editor.invalidate();
+					},
 				};
 			});
 
 			if (result.cancelled) {
 				return {
-					content: [{ type: "text", text: "User cancelled the questionnaire" }],
+					content: [{ type: "text", text: "The user cancelled the questionnaire." }],
 					details: result,
 				};
 			}
 
-			const answerLines = result.answers.map((a) => {
-				const qLabel = questions.find((q) => q.id === a.id)?.label || a.id;
-				const labels = Array.isArray(a.label) ? a.label.join(", ") : a.label;
-				if (Array.isArray(a.value)) {
-					return `${qLabel}: user selected: ${labels}`;
-				}
-				if (a.wasCustom) {
-					return `${qLabel}: user wrote: ${labels}`;
-				}
-				return `${qLabel}: user selected: ${a.index}. ${labels}`;
+			const answerLines = result.answers.map((answer) => {
+				const question = questions.find((item) => item.id === answer.id);
+				const label = question?.label ?? answer.id;
+				return answer.wasCustom
+					? `${label}: user wrote: ${answer.label}`
+					: `${label}: user selected: ${answer.index}. ${answer.label} (value: ${answer.value})`;
 			});
-
 			return {
 				content: [{ type: "text", text: answerLines.join("\n") }],
 				details: result,
 			};
 		},
 
-		renderCall(args, theme, _context) {
-			const qs = (args.questions as Question[]) || [];
-			const count = qs.length;
-			const labels = qs.map((q) => q.label || q.id).join(", ");
+		renderCall(args, theme) {
+			const questions = Array.isArray(args.questions) ? args.questions : [];
+			const labels = questions.map((question) => question.label || question.id).filter(Boolean);
+			const count = questions.length;
 			let text = theme.fg("toolTitle", theme.bold("questionnaire "));
-			text += theme.fg("muted", `${count} question${count !== 1 ? "s" : ""}`);
-			if (labels) {
-				text += theme.fg("dim", ` (${labels})`);
-			}
+			text += theme.fg("muted", `${count} question${count === 1 ? "" : "s"}`);
+			if (labels.length > 0) text += theme.fg("dim", ` (${labels.join(", ")})`);
 			return new Text(text, 0, 0);
 		},
 
-		renderResult(result, _options, theme, _context) {
-			const details = result.details as QuestionnaireResult | undefined;
+		renderResult(result, _options, theme) {
+			const details = result.details as QuestionnaireDetails | undefined;
 			if (!details) {
-				const text = result.content[0];
-				return new Text(text?.type === "text" ? text.text : "", 0, 0);
+				const content = result.content[0];
+				return new Text(content?.type === "text" ? content.text : "", 0, 0);
 			}
-			if (details.cancelled) {
-				return new Text(theme.fg("warning", "Cancelled"), 0, 0);
-			}
-			const lines = details.answers.map((a) => {
-				const labels = Array.isArray(a.label) ? a.label.join(", ") : a.label;
-				if (Array.isArray(a.value)) {
-					const prefix = a.wasCustom ? theme.fg("muted", "(includes custom) ") : "";
-					return `${theme.fg("success", "✓ ")}${theme.fg("accent", a.id)}: ${prefix}${labels}`;
-				}
-				if (a.wasCustom) {
-					return `${theme.fg("success", "✓ ")}${theme.fg("accent", a.id)}: ${theme.fg("muted", "(wrote) ")}${labels}`;
-				}
-				const display = a.index ? `${a.index}. ${labels}` : labels;
-				return `${theme.fg("success", "✓ ")}${theme.fg("accent", a.id)}: ${display}`;
+			if (details.error) return new Text(theme.fg("error", details.error), 0, 0);
+			if (details.cancelled) return new Text(theme.fg("warning", "Cancelled"), 0, 0);
+
+			const questionLabels = new Map(details.questions.map((question) => [question.id, question.label]));
+			const lines = details.answers.map((answer) => {
+				const label = questionLabels.get(answer.id) ?? answer.id;
+				const value = answer.wasCustom ? `${theme.fg("muted", "(wrote) ")}${answer.label}` : answer.label;
+				return `${theme.fg("success", "✓ ")}${theme.fg("accent", label)}: ${value}`;
 			});
 			return new Text(lines.join("\n"), 0, 0);
 		},

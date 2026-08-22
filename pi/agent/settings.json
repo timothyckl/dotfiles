@@ -1,23 +1,21 @@
 {
-  "lastChangelogVersion": "0.79.6",
-  "defaultProvider": "deepseek",
-  "defaultModel": "deepseek-v4-pro",
-  "defaultThinkingLevel": "high",
-  "theme": "github-dark-high-contrast",
-  "packages": [
-    "npm:pi-exa",
-    "npm:@marckrenn/pi-sub-bar",
-    "npm:@aliou/pi-guardrails"
-  ],
-  "timeoutMs": 600000,
-  "websocketConnectTimeoutMs": 15000,
-  "retry": {
-    "provider": {
-      "timeoutMs": 1800000,
-      "maxRetryDelayMs": 300000
-    }
+  "lastChangelogVersion": "0.84.2",
+  "theme": "dark",
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.6-sol",
+  "defaultThinkingLevel": "medium",
+  "fullscreenExitOutput": "transcript",
+  "tuiMode": "fullscreen",
+  "compaction": {
+    "enabled": true
   },
+  "showHardwareCursor": false,
+  "transport": "auto",
   "hideThinkingBlock": true,
   "collapseChangelog": true,
-  "quietStartup": true
+  "quietStartup": true,
+  "treeFilterMode": "default",
+  "packages": [
+    "npm:pi-exa"
+  ]
 }

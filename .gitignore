@@ -5,9 +5,15 @@
 *.key
 *.crt
 
-# Pi local/runtime state
+# Pi secrets and local/runtime state
 pi/agent/auth.json
 pi/agent/sessions/
 pi/agent/cache/
 pi/agent/bin/
+pi/agent/exa-mcp-cache
+pi/agent/models-store.json
+pi/agent/trust.json
 pi/agent/npm/node_modules/
+
+# OS metadata
+.DS_Store
